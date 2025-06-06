@@ -15,8 +15,8 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/spf13/viper"
 
-	"githubassign/logger"
-	"githubassign/models"
+	"githubapifetch/logger"
+	"githubapifetch/models"
 )
 
 // Common errors
