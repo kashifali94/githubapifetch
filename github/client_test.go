@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"githubassign/logger"
+	"githubapifetch/logger"
 
 	"github.com/stretchr/testify/assert"
 )
