@@ -1,4 +1,4 @@
-module githubassign
+module githubapifetch
 
 go 1.24.2
 
