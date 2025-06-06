@@ -1,0 +1,37 @@
+# Go binary executables
+github-fetch
+*.test
+
+# Go test coverage files
+coverage.out
+coverage.html
+
+# Go vendor directory
+/vendor/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+
+go.sum
+
+# Build artifacts
+*.out
+*.exe
+*.o
+*.a
+
+# Temporary files
+*.log
+*.tmp
+
+# Go build cache
+/.cache
+/localstack
+/teraform-test
