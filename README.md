@@ -118,8 +118,6 @@ Install:
 - Retry mechanisms for API reliability
 - Structured separation between GitHub, DB, and logic layers
 
-
-
 ---
 
 ### Future Improvements
