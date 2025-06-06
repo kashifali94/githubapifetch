@@ -5,7 +5,7 @@ TEST_BINARY=$(APP_NAME).test
 
 build:
 	@echo "🔧 Building main binary..."
-	GOOS=linux GOARCH=amd64 go build -o $(APP_NAME) main.go
+	GOOS=linux GOARCH=amd64 go build -o $(APP_NAME) cmd/main.go
 
 # Build test binaries for each package
 test-binaries:
