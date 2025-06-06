@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
-	"githubassign/config"
-	"githubassign/github"
-	"githubassign/models"
+	"githubapifetch/config"
+	"githubapifetch/github"
+	"githubapifetch/models"
 )
 
 // MockDB is a mock implementation of the database interface
