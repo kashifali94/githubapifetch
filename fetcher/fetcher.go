@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"githubassign/github"
-	"githubassign/models"
+	"githubapifetch/github"
+	"githubapifetch/models"
 )
 
 // DBInterface defines the database operations needed by the fetcher
