@@ -1,22 +1,28 @@
 package main
 
 import (
-	"githubassign/service"
-	"log"
+	"githubapifetch/logger"
+	"githubapifetch/service"
+
+	"go.uber.org/zap"
 )
 
 func main() {
-	ser, err := service.NewService()
-	if err != nil {
-		log.Fatalf("Failed to initialize ser: %v", err)
+	// Initialize logger
+	if err := logger.Initialize("info"); err != nil {
+		panic("Failed to initialize logger: " + err.Error())
 	}
-	defer func() {
-		if err := ser.Close(); err != nil {
-			log.Printf("Error during ser shutdown: %v", err)
-		}
-	}()
+	defer logger.Sync()
 
-	if err := ser.Start(); err != nil {
-		log.Fatalf("Service error: %v", err)
+	// Initialize service
+	svc, err := service.NewService()
+	if err != nil {
+		logger.Fatal("Failed to initialize service", zap.Error(err))
+	}
+	defer svc.Close()
+
+	// Start the service
+	if err := svc.Start(); err != nil {
+		logger.Fatal("Service error", zap.Error(err))
 	}
 }
