@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"githubassign/logger"
+	"githubapifetch/logger"
 	"net/http"
 	"net/url"
 	"time"
