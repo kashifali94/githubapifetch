@@ -82,10 +82,80 @@ Install:
    docker exec -it github_monitor_app ./github-fetch
    ```
 
-
 7. Run Tests:
    ```bash
-  docker exec -it github_monitor_app test-binaries/githubapifetch_<test-binary-name>
+   docker exec -it github_monitor_app test-binaries/githubapifetch_<test-binary-name>
    ```
 
+8. For  query to Run :
+   ```bash
+   psql -U "test-user" -h localhost -p 5434 -d github_monitor
+   ```
+
+9. For Query 1  :
+    Get the top N commit authors by commit counts from the database
+    ```bash 
+     SELECT author_name, COUNT(*) AS commit_count
+      FROM commits
+      GROUP BY author_name
+      ORDER BY commit_count DESC
+      LIMIT N;  # Where N is number
+     ```
+10. For Query 2 : 
+      Retrieve commits of a repository by repository name from the database
+      ```bash 
+     SELECT c.*
+      FROM commits c
+      JOIN repositories r ON c.repository_id = r.id
+      WHERE r.name = <name_of_the_repo>;
+     ```
 ---
+### Design Decisions and Trade-offs
+
+- Modular code layout for better scalability
+- Uses environment variables to manage configuration securely
+- Efficient logging system for observability
+- Retry mechanisms for API reliability
+- Structured separation between GitHub, DB, and logic layers
+
+
+
+---
+
+### Future Improvements
+
+- Add web interface for query and visualization
+- Enable multi-user OAuth-based GitHub access
+- Paginated and filtered commit retrieval
+- Background workers for scheduled GitHub syncs
+- Support for GitHub webhooks
+
+
+--- 
+
+### Sample OutPut
+```
+{"level":"INFO","ts":"2025-06-06T02:16:10.448Z","caller":"logger/logger.go:75","msg":"Connecting to database","dsn":"user=test-user password=2222 dbname=github_monitor port=5432 host=db sslmode=disable"}
+{"level":"INFO","ts":"2025-06-06T02:16:10.463Z","caller":"logger/logger.go:75","msg":"Database connection established","max_open_conns":25,"max_idle_conns":25,"conn_max_lifetime":300}
+{"level":"INFO","ts":"2025-06-06T02:16:10.463Z","caller":"logger/logger.go:75","msg":"Initializing GitHub client","base_url":"https://api.github.com"}
+{"level":"INFO","ts":"2025-06-06T02:16:10.464Z","caller":"logger/logger.go:75","msg":"Service initialized successfully","repo_owner":"barchart","repo_name":"marketdata-api-js","poll_interval":3600}
+{"level":"INFO","ts":"2025-06-06T02:16:10.464Z","caller":"logger/logger.go:75","msg":"Processing initial repository","repo_owner":"barchart","repo_name":"marketdata-api-js"}
+{"level":"INFO","ts":"2025-06-06T02:16:10.464Z","caller":"logger/logger.go:75","msg":"Fetching repository information","repo_owner":"barchart","repo_name":"marketdata-api-js"}
+{"level":"INFO","ts":"2025-06-06T02:16:10.464Z","caller":"logger/logger.go:75","msg":"Fetching repository","owner":"barchart","name":"marketdata-api-js","url":"https://api.github.com/repos/barchart/marketdata-api-js"}
+{"level":"INFO","ts":"2025-06-06T02:16:11.333Z","caller":"logger/logger.go:75","msg":"Successfully fetched repository","owner":"barchart","name":"marketdata-api-js","language":"JavaScript","stars":27}
+{"level":"INFO","ts":"2025-06-06T02:16:11.333Z","caller":"logger/logger.go:75","msg":"Storing repository","owner":"barchart","name":"marketdata-api-js"}
+{"level":"INFO","ts":"2025-06-06T02:16:11.344Z","caller":"logger/logger.go:75","msg":"Repository stored successfully","owner":"barchart","name":"marketdata-api-js","id":1}
+{"level":"INFO","ts":"2025-06-06T02:16:11.344Z","caller":"logger/logger.go:75","msg":"Retrieving repository by name","name":"marketdata-api-js"}
+{"level":"INFO","ts":"2025-06-06T02:16:11.346Z","caller":"logger/logger.go:75","msg":"Repository retrieved successfully","name":"marketdata-api-js"}
+{"level":"INFO","ts":"2025-06-06T02:16:11.346Z","caller":"logger/logger.go:75","msg":"Fetching commits","repo_owner":"barchart","repo_name":"marketdata-api-js","since":"0001-01-01T00:00:00.000Z"}
+{"level":"INFO","ts":"2025-06-06T02:16:11.346Z","caller":"logger/logger.go:75","msg":"Fetching commits","owner":"barchart","name":"marketdata-api-js","since":"0001-01-01T00:00:00.000Z","url":"https://api.github.com/repos/barchart/marketdata-api-js/commits"}
+{"level":"INFO","ts":"2025-06-06T02:16:11.924Z","caller":"logger/logger.go:75","msg":"Successfully fetched commits","owner":"barchart","name":"marketdata-api-js","count":30}
+{"level":"INFO","ts":"2025-06-06T02:16:11.924Z","caller":"logger/logger.go:75","msg":"Storing commits","repo_owner":"barchart","repo_name":"marketdata-api-js","commit_count":30}
+{"level":"INFO","ts":"2025-06-06T02:16:11.924Z","caller":"logger/logger.go:75","msg":"Starting batch insertion of commits","count":30}
+{"level":"INFO","ts":"2025-06-06T02:16:11.940Z","caller":"logger/logger.go:75","msg":"Successfully inserted commits","count":30}
+{"level":"INFO","ts":"2025-06-06T02:16:11.940Z","caller":"logger/logger.go:75","msg":"Successfully processed repository","repo_owner":"barchart","repo_name":"marketdata-api-js","commit_count":30}
+{"level":"INFO","ts":"2025-06-06T02:16:11.940Z","caller":"logger/logger.go:75","msg":"Starting repository monitoring","poll_interval":3600}
+^Z^X^C{"level":"INFO","ts":"2025-06-06T02:16:14.929Z","caller":"logger/logger.go:75","msg":"Shutdown signal received, initiating graceful shutdown"}
+{"level":"INFO","ts":"2025-06-06T02:16:14.930Z","caller":"logger/logger.go:75","msg":"Closing service"}
+```
+   
