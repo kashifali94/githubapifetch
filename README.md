@@ -1,88 +1,91 @@
 # GitHub API Fetch
 
-A Go-based service that monitors and fetches data from GitHub repositories using the GitHub API.
+**GitHub API Fetch** is a Go-based tool designed to interact with the GitHub API, providing functionalities such as fetching user data, repository information, and commit histories. It aims to simplify the process of integrating GitHub data into applications and services.
 
-## Features
+## 📘 Table of Contents
+- [Project Overview](#project-overview)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Usage Example](#usage-example)
+- [Design Decisions and Trade-offs](#design-decisions-and-trade-offs)
+- [Future Improvements](#future-improvements)
+- [Sample Output](#sample-output)
 
-- GitHub repository monitoring
-- PostgreSQL database integration
-- Configurable polling intervals
-- Docker and Docker Compose support
-- Comprehensive test coverage
+---
 
-## Prerequisites
+## 🛠️ Project Overview
 
-- Go 1.24.2 or higher
-- Docker and Docker Compose
-- PostgreSQL (if running locally)
-- GitHub Personal Access Token
+This project provides functionality to:
+- Fetch user details from the GitHub API
+- Retrieve repository information and statistics
+- Access commit histories and associated metadata
+- Handle pagination and rate limiting gracefully
+- Implement error handling and retries for API requests
+- Provide a modular and extensible architecture for future integrations
 
-## Configuration
+---
 
-The application uses environment variables for configuration. Create a `.env` file in the root directory with the following variables:
+## 🧪 Project Structure
 
-```env
-GITHUB_TOKEN=your_github_token
-POSTGRES_USER=your_db_user
-POSTGRES_PASSWORD=your_db_password
-POSTGRES_DB=your_db_name
-POSTGRES_PORT=5432
-POLL_INTERVAL=300  # in seconds
-```
+- `github/`: Modules for interacting with the GitHub API
+- `config/`: Configuration and environment variable management
+- `logger/`: Application logging
+- `main.go`: Application entry point
+- `Makefile`: Automation tasks
+- `Dockerfile`: Docker image build steps
+- `docker-compose.yml`: Container orchestration
 
-## Building and Running
+---
 
-### Using Make
+## 🚀 Getting Started
 
-```bash
-# Build the application
-make build
+### Prerequisites
 
-# Run tests
-make test-binary
+Install:
+- [Go 1.18+](https://golang.org/dl/)
+- [Docker](https://www.docker.com/get-started)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+- [Make](https://www.gnu.org/software/make/)
 
-```
+### Build and Run
 
-### Using Docker Compose
+### Building and Running the Application
 
-```bash
-# Start the services
-docker-compose up -d
+1. Clone the Repository:
+   ```bash
+   git clone <repository-url>
+   cd Savannahtakehomeassi
+   ```
 
-# Stop the services
-docker-compose down
-```
+2. Install Dependencies:
+   ```bash
+   go mod tidy
+   ```
 
-## Project Structure
+3. Build the Application:
+   ```bash
+   make build
+   ```
 
-```
-.
-├── cmd/            # Application entry points
-├── config/         # Configuration management
-├── db/            # Database related code and migrations
-├── fetcher/       # GitHub API fetching logic
-├── github/        # GitHub API client
-├── logger/        # Logging utilities
-├── models/        # Data models
-├── service/       # Business logic services
-└── test-binaries/ # Test artifacts
-```
+4. Build Test Binaries:
+   ```bash
+   make build test-binaries
+   ```
 
-## Development
+5. Start the Environment:
+   ```bash
+   docker-compose up --build -d
+   ```
 
-1. Clone the repository
-2. Install dependencies: `go mod download`
-3. Set up your environment variables
-4. Run the application locally or using Docker
+6. Run this to start the app :
+   ```bash
+   docker exec -it github_monitor_app ./github-fetch
+   ```
 
-## Testing
 
-The project includes comprehensive test coverage. Run tests using:
+7. Run Tests:
+   ```bash
+  docker exec -it github_monitor_app test-binaries/githubapifetch_<test-binary-name>
+   ```
 
-```bash
-make test-binary
-```
-
-## License
-
-[Add your license information here]
+---
