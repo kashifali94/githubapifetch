@@ -7,11 +7,20 @@ import (
 	"githubapifetch/logger"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+// RateLimit represents GitHub's rate limit information
+type RateLimit struct {
+	Limit     int
+	Remaining int
+	Reset     time.Time
+}
+
+// Client represents a GitHub API client
 type Client struct {
 	token      string
 	httpClient *http.Client
@@ -108,61 +117,127 @@ func (c *Client) FetchRepo(ctx context.Context, owner, name string) (*RepoRespon
 	return &repo, nil
 }
 
+// parseRateLimit parses rate limit information from response headers
+func parseRateLimit(resp *http.Response) RateLimit {
+	limit, _ := strconv.Atoi(resp.Header.Get("X-RateLimit-Limit"))
+	remaining, _ := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
+	reset, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
+
+	return RateLimit{
+		Limit:     limit,
+		Remaining: remaining,
+		Reset:     time.Unix(reset, 0),
+	}
+}
+
+// handleRateLimit handles rate limit responses and implements exponential backoff
+func (c *Client) handleRateLimit(resp *http.Response) error {
+	if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		resetTime, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
+		waitTime := time.Until(time.Unix(resetTime, 0))
+		logger.Info("Rate limit exceeded, waiting for reset",
+			zap.Int("limit", parseRateLimit(resp).Limit),
+			zap.Time("reset_time", time.Unix(resetTime, 0)),
+			zap.Duration("wait_time", waitTime))
+		time.Sleep(waitTime)
+		return nil
+	}
+	return nil
+}
+
+// FetchCommits fetches commits from a repository with pagination support
 func (c *Client) FetchCommits(ctx context.Context, owner, name string, since time.Time) ([]CommitResponse, error) {
-	path := fmt.Sprintf("/repos/%s/%s/commits", owner, name)
-	reqURL := c.baseURL.ResolveReference(&url.URL{Path: path})
+	var allCommits []CommitResponse
+	page := 1
+	perPage := 100 // GitHub's maximum allowed per page
 
-	if !since.IsZero() {
+	for {
+		path := fmt.Sprintf("/repos/%s/%s/commits", owner, name)
+		reqURL := c.baseURL.ResolveReference(&url.URL{Path: path})
+
 		q := reqURL.Query()
-		q.Set("since", since.Format(time.RFC3339))
+		q.Set("page", strconv.Itoa(page))
+		q.Set("per_page", strconv.Itoa(perPage))
+		if !since.IsZero() {
+			q.Set("since", since.Format(time.RFC3339))
+		}
 		reqURL.RawQuery = q.Encode()
+
+		logger.Info("Fetching commits page",
+			zap.String("owner", owner),
+			zap.String("name", name),
+			zap.Int("page", page),
+			zap.Time("since", since),
+			zap.String("url", reqURL.String()))
+
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("token %s", c.token))
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			logger.Error("Failed to fetch commits",
+				zap.Error(err),
+				zap.String("owner", owner),
+				zap.String("name", name))
+			return nil, fmt.Errorf("failed to fetch commits: %w", err)
+		}
+
+		// Handle rate limiting
+		if err := c.handleRateLimit(resp); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			logger.Error("Failed to fetch commits",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("owner", owner),
+				zap.String("name", name))
+			return nil, fmt.Errorf("failed to fetch commits: status code %d", resp.StatusCode)
+		}
+
+		var commits []CommitResponse
+		if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+			resp.Body.Close()
+			logger.Error("Failed to decode commits response",
+				zap.Error(err),
+				zap.String("owner", owner),
+				zap.String("name", name))
+			return nil, fmt.Errorf("failed to decode commits response: %w", err)
+		}
+		resp.Body.Close()
+
+		// If no commits returned, we've reached the end
+		if len(commits) == 0 {
+			break
+		}
+
+		allCommits = append(allCommits, commits...)
+
+		// Check if we've reached the last page
+		linkHeader := resp.Header.Get("Link")
+		if linkHeader == "" || !containsNextPage(linkHeader) {
+			break
+		}
+
+		page++
 	}
 
-	logger.Info("Fetching commits",
+	logger.Info("Successfully fetched all commits",
 		zap.String("owner", owner),
 		zap.String("name", name),
-		zap.Time("since", since),
-		zap.String("url", reqURL.String()))
+		zap.Int("total_count", len(allCommits)))
 
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	return allCommits, nil
+}
 
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", c.token))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		logger.Error("Failed to fetch commits",
-			zap.Error(err),
-			zap.String("owner", owner),
-			zap.String("name", name))
-		return nil, fmt.Errorf("failed to fetch commits: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Error("Failed to fetch commits",
-			zap.Int("status_code", resp.StatusCode),
-			zap.String("owner", owner),
-			zap.String("name", name))
-		return nil, fmt.Errorf("failed to fetch commits: status code %d", resp.StatusCode)
-	}
-
-	var commits []CommitResponse
-	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
-		logger.Error("Failed to decode commits response",
-			zap.Error(err),
-			zap.String("owner", owner),
-			zap.String("name", name))
-		return nil, fmt.Errorf("failed to decode commits response: %w", err)
-	}
-
-	logger.Info("Successfully fetched commits",
-		zap.String("owner", owner),
-		zap.String("name", name),
-		zap.Int("count", len(commits)))
-
-	return commits, nil
+// containsNextPage checks if the Link header contains a next page
+func containsNextPage(linkHeader string) bool {
+	return linkHeader != "" && linkHeader[len(linkHeader)-1] == '>'
 }
