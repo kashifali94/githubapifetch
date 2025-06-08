@@ -157,3 +157,117 @@ Install:
 {"level":"INFO","ts":"2025-06-06T02:16:14.930Z","caller":"logger/logger.go:75","msg":"Closing service"}
 ```
    
+
+## Features
+
+- Fetch repository information and commits from GitHub
+- Store data in a SQLite database
+- Monitor repositories for changes
+- Reset sync points to fetch historical data
+- Containerized deployment with Docker
+
+## Installation
+
+### Local Installation
+
+```bash
+go get github.com/yourusername/githubapifetch
+```
+
+### Docker Installation
+
+1. Create a `.env` file with required environment variables:
+```env
+GITHUB_TOKEN=your_github_token
+POSTGRES_USER=your_db_user
+POSTGRES_PASSWORD=your_db_password
+POSTGRES_DB=your_db_name
+POSTGRES_PORT=5432
+POLL_INTERVAL=300
+```
+
+2. Start the application:
+```bash
+docker-compose up -d
+```
+
+## Usage
+
+### Starting the Service
+
+The application will start automatically with Docker Compose:
+```bash
+docker-compose up -d
+```
+
+### Resetting Sync Points
+
+You can reset the sync point for a repository using the existing container. Here's how:
+
+1. Reset to default (30 days ago):
+```bash
+docker exec github_monitor_app ./github-fetch  reset-sync -repo your-repo-name
+```
+
+2. Reset to a specific number of days ago:
+```bash
+docker exec github_monitor_app ./github-fetch reset-sync -repo your-repo-name -days 60
+```
+
+Example for Chromium repository:
+```bash
+docker exec github_monitor_app ./github-fetch  reset-sync -repo chromium -days 60
+```
+
+Alternatively, you can run a one-off container for reset-sync:
+```bash
+docker-compose run --rm app ./github-fetch  reset-sync -repo your-repo-name -days 60
+```
+
+### What Happens When You Reset
+
+When you reset a sync point:
+1. The application connects to the database
+2. Finds the repository by name
+3. Resets the sync point to the specified date
+4. Fetches all commits from that date forward
+5. Stores the commits in the database
+6. Continues monitoring from the new sync point
+
+## Development
+
+### Running Tests
+
+```bash
+go test ./...
+```
+
+### Project Structure
+
+- `cmd/`: Command-line interface
+- `config/`: Configuration management
+- `db/`: Database operations
+- `github/`: GitHub API client
+- `models/`: Data models
+- `service/`: Core service logic
+
+### Docker Development
+
+1. Build the development image:
+```bash
+docker-compose build
+```
+
+2. Run tests in container:
+```bash
+docker-compose run --rm app go test ./...
+```
+
+3. Run with hot reload:
+```bash
+docker-compose run --rm app go run main.go
+```
+
+## License
+
+MIT License
