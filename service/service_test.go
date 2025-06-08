@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -36,6 +37,10 @@ func (m *MockDB) BatchInsert(ctx context.Context, commits []models.Commit) error
 	return args.Error(0)
 }
 
+func (m *MockDB) MonitorRepositoryChanges(ctx context.Context, interval time.Duration, callback func(string, time.Time) error) {
+	m.Called(ctx, interval, callback)
+}
+
 func (m *MockDB) Close() error {
 	args := m.Called()
 	return args.Error(0)
@@ -62,7 +67,7 @@ func (m *MockGitHubClient) FetchCommits(ctx context.Context, owner, name string,
 	return args.Get(0).([]github.CommitResponse), args.Error(1)
 }
 
-func TestProcessRepository(t *testing.T) {
+func TestRepositoryProcessor_Process(t *testing.T) {
 	now := time.Now()
 	testCases := []struct {
 		name           string
@@ -226,12 +231,148 @@ func TestProcessRepository(t *testing.T) {
 				tc.setupMocks(mockDB, mockClient)
 			}
 
-			cfg := &config.Config{
-				RepoOwner: tc.owner,
-				RepoName:  tc.repoName,
+			processor := NewRepositoryProcessor(mockDB, mockClient)
+			err := processor.Process(context.Background(), tc.owner, tc.repoName, tc.since)
+
+			if tc.expectedError != nil {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedError.Error())
+			} else {
+				assert.NoError(t, err)
 			}
 
-			err := processRepository(context.Background(), mockDB, mockClient, cfg, tc.since)
+			mockDB.AssertExpectations(t)
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestService_ResetSyncPoint(t *testing.T) {
+	now := time.Now()
+	testCases := []struct {
+		name          string
+		repoName      string
+		newDate       time.Time
+		mockRepo      *models.Repository
+		setupMocks    func(*MockDB, *MockGitHubClient)
+		expectedError error
+	}{
+		{
+			name:     "successful reset",
+			repoName: "test-repo",
+			newDate:  now.Add(-30 * 24 * time.Hour), // 30 days ago
+			mockRepo: &models.Repository{
+				ID:        1,
+				Name:      "test-repo",
+				Owner:     "test-owner",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			setupMocks: func(mockDB *MockDB, mockClient *MockGitHubClient) {
+				mockDB.On("GetByName", mock.Anything, "test-repo").
+					Return(&models.Repository{
+						ID:        1,
+						Name:      "test-repo",
+						Owner:     "test-owner",
+						CreatedAt: now,
+						UpdatedAt: now,
+					}, nil)
+
+				mockClient.On("FetchRepo", mock.Anything, "test-owner", "test-repo").
+					Return(&github.RepoResponse{
+						Description:     "Test repository",
+						HTMLURL:         "https://github.com/test-owner/test-repo",
+						Language:        "Go",
+						ForksCount:      10,
+						StargazersCount: 100,
+						OpenIssuesCount: 5,
+						WatchersCount:   50,
+						CreatedAt:       now,
+						UpdatedAt:       now,
+					}, nil)
+
+				mockDB.On("StoreRepository", mock.Anything, mock.MatchedBy(func(repo models.Repository) bool {
+					return repo.Name == "test-repo" && repo.Owner == "test-owner"
+				})).Return(nil)
+
+				mockClient.On("FetchCommits", mock.Anything, "test-owner", "test-repo", mock.Anything).
+					Return([]github.CommitResponse{
+						{
+							SHA: "abc123",
+							Commit: struct {
+								Message string `json:"message"`
+								Author  struct {
+									Name  string    `json:"name"`
+									Email string    `json:"email"`
+									Date  time.Time `json:"date"`
+								} `json:"author"`
+							}{
+								Message: "Test commit",
+								Author: struct {
+									Name  string    `json:"name"`
+									Email string    `json:"email"`
+									Date  time.Time `json:"date"`
+								}{
+									Name:  "Test Author",
+									Email: "test@example.com",
+									Date:  now,
+								},
+							},
+							HTMLURL: "https://github.com/test-owner/test-repo/commit/abc123",
+						},
+					}, nil)
+
+				mockDB.On("BatchInsert", mock.Anything, mock.MatchedBy(func(commits []models.Commit) bool {
+					return len(commits) == 1 && commits[0].SHA == "abc123"
+				})).Return(nil)
+
+				// Set up expectations for the new methods
+				mockDB.On("MonitorRepositoryChanges", mock.Anything, mock.Anything, mock.Anything).Return()
+				mockDB.On("Close").Return(nil)
+			},
+			expectedError: nil,
+		},
+		{
+			name:          "empty repository name",
+			repoName:      "",
+			newDate:       now,
+			expectedError: fmt.Errorf("repository name cannot be empty"),
+		},
+		{
+			name:     "repository not found",
+			repoName: "non-existent-repo",
+			newDate:  now,
+			setupMocks: func(mockDB *MockDB, mockClient *MockGitHubClient) {
+				mockDB.On("GetByName", mock.Anything, "non-existent-repo").
+					Return(nil, assert.AnError)
+			},
+			expectedError: fmt.Errorf("failed to get repository: %w", assert.AnError),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockDB := &MockDB{}
+			mockClient := &MockGitHubClient{}
+
+			if tc.setupMocks != nil {
+				tc.setupMocks(mockDB, mockClient)
+			}
+
+			cfg := &config.Config{
+				RepoOwner: "test-owner",
+				RepoName:  "test-repo",
+			}
+
+			// Create a service with our mocks
+			svc := &Service{
+				config:    cfg,
+				database:  mockDB,
+				client:    mockClient,
+				processor: NewRepositoryProcessor(mockDB, mockClient),
+				ctx:       context.Background(),
+			}
+			err := svc.ResetSyncPoint(context.Background(), tc.repoName, tc.newDate)
 
 			if tc.expectedError != nil {
 				assert.Error(t, err)
