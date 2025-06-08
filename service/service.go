@@ -22,6 +22,8 @@ type DBInterface interface {
 	StoreRepository(ctx context.Context, repo models.Repository) error
 	GetByName(ctx context.Context, name string) (*models.Repository, error)
 	BatchInsert(ctx context.Context, commits []models.Commit) error
+	MonitorRepositoryChanges(ctx context.Context, interval time.Duration, callback func(string, time.Time) error)
+	Close() error
 }
 
 // GitHubClientInterface abstracts the GitHub client operations needed by the service
@@ -37,13 +39,120 @@ var (
 	ErrServiceShutdown = fmt.Errorf("service shutdown error")
 )
 
+// RepositoryProcessor handles the core repository processing logic
+type RepositoryProcessor struct {
+	db     DBInterface
+	client GitHubClientInterface
+}
+
+// NewRepositoryProcessor creates a new processor
+func NewRepositoryProcessor(db DBInterface, client GitHubClientInterface) *RepositoryProcessor {
+	return &RepositoryProcessor{
+		db:     db,
+		client: client,
+	}
+}
+
+// Process handles a single repository processing operation
+func (p *RepositoryProcessor) Process(ctx context.Context, owner, name string, since time.Time) error {
+	// Check context cancellation
+	if ctx.Err() != nil {
+		return fmt.Errorf("context cancelled: %w", ctx.Err())
+	}
+
+	// First, fetch and store repository information
+	logger.Info("Fetching repository information",
+		zap.String("repo_owner", owner),
+		zap.String("repo_name", name))
+
+	repo, err := p.client.FetchRepo(ctx, owner, name)
+	if err != nil {
+		return fmt.Errorf("failed to fetch repository %s/%s: %w", owner, name, err)
+	}
+
+	// Convert to model and store
+	repoModel := models.Repository{
+		Name:            name,
+		Owner:           owner,
+		Description:     repo.Description,
+		URL:             repo.HTMLURL,
+		Language:        repo.Language,
+		ForksCount:      repo.ForksCount,
+		StarsCount:      repo.StargazersCount,
+		OpenIssuesCount: repo.OpenIssuesCount,
+		WatchersCount:   repo.WatchersCount,
+		CreatedAt:       repo.CreatedAt,
+		UpdatedAt:       repo.UpdatedAt,
+	}
+
+	if err := p.db.StoreRepository(ctx, repoModel); err != nil {
+		return fmt.Errorf("failed to store repository %s/%s: %w", owner, name, err)
+	}
+
+	// Get the stored repository to get its ID
+	storedRepo, err := p.db.GetByName(ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to get stored repository %s: %w", name, err)
+	}
+
+	// Fetch commits
+	logger.Info("Fetching commits",
+		zap.String("repo_owner", owner),
+		zap.String("repo_name", name),
+		zap.Time("since", since))
+
+	commits, err := p.client.FetchCommits(ctx, owner, name, since)
+	if err != nil {
+		return fmt.Errorf("failed to fetch commits for %s/%s: %w", owner, name, err)
+	}
+
+	if len(commits) == 0 {
+		logger.Info("No new commits found",
+			zap.String("repo_owner", owner),
+			zap.String("repo_name", name))
+		return nil
+	}
+
+	// Convert commits to models
+	var commitModels []models.Commit
+	for _, commit := range commits {
+		commitModel := models.Commit{
+			SHA:        commit.SHA,
+			RepoID:     storedRepo.ID,
+			Message:    commit.Commit.Message,
+			AuthorName: commit.Commit.Author.Name,
+			Date:       commit.Commit.Author.Date,
+			URL:        commit.HTMLURL,
+		}
+		commitModels = append(commitModels, commitModel)
+	}
+
+	// Store commits in batches
+	logger.Info("Storing commits",
+		zap.String("repo_owner", owner),
+		zap.String("repo_name", name),
+		zap.Int("commit_count", len(commits)))
+
+	if err := p.db.BatchInsert(ctx, commitModels); err != nil {
+		return fmt.Errorf("failed to store commits for %s/%s: %w", owner, name, err)
+	}
+
+	logger.Info("Successfully processed repository",
+		zap.String("repo_owner", owner),
+		zap.String("repo_name", name),
+		zap.Int("commit_count", len(commits)))
+
+	return nil
+}
+
 // Service represents the main application service
 type Service struct {
-	config   *config.Config
-	database *db.DB
-	client   *github.Client
-	ctx      context.Context
-	cancel   context.CancelFunc
+	config    *config.Config
+	database  DBInterface
+	client    GitHubClientInterface
+	processor *RepositoryProcessor
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewService creates a new service instance
@@ -66,17 +175,21 @@ func NewService() (*Service, error) {
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Create repository processor
+	processor := NewRepositoryProcessor(database, client)
+
 	logger.Info("Service initialized successfully",
 		zap.String("repo_owner", cfg.RepoOwner),
 		zap.String("repo_name", cfg.RepoName),
 		zap.Int("poll_interval", cfg.PollInterval))
 
 	return &Service{
-		config:   cfg,
-		database: database,
-		client:   client,
-		ctx:      ctx,
-		cancel:   cancel,
+		config:    cfg,
+		database:  database,
+		client:    client,
+		processor: processor,
+		ctx:       ctx,
+		cancel:    cancel,
 	}, nil
 }
 
@@ -104,14 +217,15 @@ func (s *Service) Start() error {
 func (s *Service) processInitialRepository() error {
 	logger.Info("Processing initial repository",
 		zap.String("repo_owner", s.config.RepoOwner),
-		zap.String("repo_name", s.config.RepoName))
+		zap.String("repo_name", s.config.RepoName),
+		zap.Time("start_date", s.config.StartDate))
 
 	// Check if context is already cancelled
 	if s.ctx.Err() != nil {
 		return fmt.Errorf("service context cancelled: %w", s.ctx.Err())
 	}
 
-	return processRepository(s.ctx, s.database, s.client, s.config, time.Time{})
+	return s.processor.Process(s.ctx, s.config.RepoOwner, s.config.RepoName, s.config.StartDate)
 }
 
 // startMonitoring starts the repository monitoring process
@@ -127,7 +241,8 @@ func (s *Service) startMonitoring() {
 			if s.ctx.Err() != nil {
 				return fmt.Errorf("service context cancelled: %w", s.ctx.Err())
 			}
-			return processRepository(s.ctx, s.database, s.client, s.config, latestDate)
+
+			return s.processor.Process(s.ctx, s.config.RepoOwner, repoName, latestDate)
 		},
 	)
 }
@@ -152,94 +267,23 @@ func (s *Service) Close() error {
 	return nil
 }
 
-// processRepository handles the processing of a single repository
-func processRepository(ctx context.Context, database DBInterface, client GitHubClientInterface, cfg *config.Config, latestDate time.Time) error {
-	// Check context cancellation
-	if ctx.Err() != nil {
-		return fmt.Errorf("context cancelled: %w", ctx.Err())
+// ResetSyncPoint resets the sync point for a repository to a specific date.
+// This will trigger a new fetch of commits from the specified date.
+func (s *Service) ResetSyncPoint(ctx context.Context, repoName string, newDate time.Time) error {
+	if repoName == "" {
+		return fmt.Errorf("repository name cannot be empty")
 	}
 
-	// First, fetch and store repository information
-	logger.Info("Fetching repository information",
-		zap.String("repo_owner", cfg.RepoOwner),
-		zap.String("repo_name", cfg.RepoName))
-
-	repo, err := client.FetchRepo(ctx, cfg.RepoOwner, cfg.RepoName)
+	// Get the repository to find its owner
+	repo, err := s.database.GetByName(ctx, repoName)
 	if err != nil {
-		return fmt.Errorf("failed to fetch repository %s/%s: %w", cfg.RepoOwner, cfg.RepoName, err)
+		return fmt.Errorf("failed to get repository: %w", err)
 	}
 
-	// Convert to model and store
-	repoModel := models.Repository{
-		Name:            cfg.RepoName,
-		Owner:           cfg.RepoOwner,
-		Description:     repo.Description,
-		URL:             repo.HTMLURL,
-		Language:        repo.Language,
-		ForksCount:      repo.ForksCount,
-		StarsCount:      repo.StargazersCount,
-		OpenIssuesCount: repo.OpenIssuesCount,
-		WatchersCount:   repo.WatchersCount,
-		CreatedAt:       repo.CreatedAt,
-		UpdatedAt:       repo.UpdatedAt,
+	// Process the repository with the new date
+	if err := s.processor.Process(ctx, repo.Owner, repo.Name, newDate); err != nil {
+		return fmt.Errorf("failed to process repository with new sync point: %w", err)
 	}
-
-	if err := database.StoreRepository(ctx, repoModel); err != nil {
-		return fmt.Errorf("failed to store repository %s/%s: %w", cfg.RepoOwner, cfg.RepoName, err)
-	}
-
-	// Get the stored repository to get its ID
-	storedRepo, err := database.GetByName(ctx, cfg.RepoName)
-	if err != nil {
-		return fmt.Errorf("failed to get stored repository %s: %w", cfg.RepoName, err)
-	}
-
-	// Fetch commits
-	logger.Info("Fetching commits",
-		zap.String("repo_owner", cfg.RepoOwner),
-		zap.String("repo_name", cfg.RepoName),
-		zap.Time("since", latestDate))
-
-	commits, err := client.FetchCommits(ctx, cfg.RepoOwner, cfg.RepoName, latestDate)
-	if err != nil {
-		return fmt.Errorf("failed to fetch commits for %s/%s: %w", cfg.RepoOwner, cfg.RepoName, err)
-	}
-
-	if len(commits) == 0 {
-		logger.Info("No new commits found",
-			zap.String("repo_owner", cfg.RepoOwner),
-			zap.String("repo_name", cfg.RepoName))
-		return nil
-	}
-
-	// Convert commits to models
-	var commitModels []models.Commit
-	for _, commit := range commits {
-		commitModel := models.Commit{
-			SHA:        commit.SHA,
-			RepoID:     storedRepo.ID,
-			Message:    commit.Commit.Message,
-			AuthorName: commit.Commit.Author.Name,
-			Date:       commit.Commit.Author.Date,
-			URL:        commit.HTMLURL,
-		}
-		commitModels = append(commitModels, commitModel)
-	}
-
-	// Store commits in batches
-	logger.Info("Storing commits",
-		zap.String("repo_owner", cfg.RepoOwner),
-		zap.String("repo_name", cfg.RepoName),
-		zap.Int("commit_count", len(commits)))
-
-	if err := database.BatchInsert(ctx, commitModels); err != nil {
-		return fmt.Errorf("failed to store commits for %s/%s: %w", cfg.RepoOwner, cfg.RepoName, err)
-	}
-
-	logger.Info("Successfully processed repository",
-		zap.String("repo_owner", cfg.RepoOwner),
-		zap.String("repo_name", cfg.RepoName),
-		zap.Int("commit_count", len(commits)))
 
 	return nil
 }
