@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -130,79 +131,146 @@ func TestFetchRepo(t *testing.T) {
 func TestFetchCommits(t *testing.T) {
 	now := time.Now()
 	testCases := []struct {
-		name           string
-		owner          string
-		repoName       string
-		since          time.Time
-		mockResponse   []CommitResponse
-		mockStatusCode int
-		expectedError  bool
+		name            string
+		owner           string
+		repoName        string
+		since           time.Time
+		mockResponses   [][]CommitResponse
+		mockStatusCodes []int
+		mockHeaders     []http.Header
+		expectedError   bool
 	}{
 		{
-			name:     "successful fetch",
+			name:     "successful fetch with pagination",
 			owner:    "test-owner",
 			repoName: "test-repo",
 			since:    now.Add(-24 * time.Hour),
-			mockResponse: []CommitResponse{
+			mockResponses: [][]CommitResponse{
 				{
-					SHA: "abc123",
-					Commit: struct {
-						Message string `json:"message"`
-						Author  struct {
-							Name  string    `json:"name"`
-							Email string    `json:"email"`
-							Date  time.Time `json:"date"`
-						} `json:"author"`
-					}{
-						Message: "Test commit",
-						Author: struct {
-							Name  string    `json:"name"`
-							Email string    `json:"email"`
-							Date  time.Time `json:"date"`
+					{
+						SHA: "abc123",
+						Commit: struct {
+							Message string `json:"message"`
+							Author  struct {
+								Name  string    `json:"name"`
+								Email string    `json:"email"`
+								Date  time.Time `json:"date"`
+							} `json:"author"`
 						}{
-							Name:  "Test Author",
-							Email: "test@example.com",
-							Date:  now,
+							Message: "Test commit 1",
+							Author: struct {
+								Name  string    `json:"name"`
+								Email string    `json:"email"`
+								Date  time.Time `json:"date"`
+							}{
+								Name:  "Test Author",
+								Email: "test@example.com",
+								Date:  now,
+							},
 						},
+						HTMLURL: "https://github.com/test-owner/test-repo/commit/abc123",
 					},
-					HTMLURL: "https://github.com/test-owner/test-repo/commit/abc123",
+				},
+				{
+					{
+						SHA: "def456",
+						Commit: struct {
+							Message string `json:"message"`
+							Author  struct {
+								Name  string    `json:"name"`
+								Email string    `json:"email"`
+								Date  time.Time `json:"date"`
+							} `json:"author"`
+						}{
+							Message: "Test commit 2",
+							Author: struct {
+								Name  string    `json:"name"`
+								Email string    `json:"email"`
+								Date  time.Time `json:"date"`
+							}{
+								Name:  "Test Author",
+								Email: "test@example.com",
+								Date:  now,
+							},
+						},
+						HTMLURL: "https://github.com/test-owner/test-repo/commit/def456",
+					},
 				},
 			},
-			mockStatusCode: http.StatusOK,
-			expectedError:  false,
+			mockStatusCodes: []int{http.StatusOK, http.StatusOK},
+			mockHeaders: []http.Header{
+				{
+					"Link": []string{"<https://api.github.com/repos/test-owner/test-repo/commits?page=2>; rel=\"next\""},
+				},
+				{
+					"Link": []string{},
+				},
+			},
+			expectedError: false,
 		},
 		{
-			name:           "repository not found",
-			owner:          "test-owner",
-			repoName:       "non-existent",
-			since:          now.Add(-24 * time.Hour),
-			mockResponse:   nil,
-			mockStatusCode: http.StatusNotFound,
-			expectedError:  true,
+			name:     "rate limit handling",
+			owner:    "test-owner",
+			repoName: "test-repo",
+			since:    now.Add(-24 * time.Hour),
+			mockResponses: [][]CommitResponse{
+				{
+					{
+						SHA: "abc123",
+						Commit: struct {
+							Message string `json:"message"`
+							Author  struct {
+								Name  string    `json:"name"`
+								Email string    `json:"email"`
+								Date  time.Time `json:"date"`
+							} `json:"author"`
+						}{
+							Message: "Test commit",
+							Author: struct {
+								Name  string    `json:"name"`
+								Email string    `json:"email"`
+								Date  time.Time `json:"date"`
+							}{
+								Name:  "Test Author",
+								Email: "test@example.com",
+								Date:  now,
+							},
+						},
+						HTMLURL: "https://github.com/test-owner/test-repo/commit/abc123",
+					},
+				},
+			},
+			mockStatusCodes: []int{http.StatusForbidden, http.StatusOK},
+			mockHeaders: []http.Header{
+				{
+					"X-RateLimit-Limit":     []string{"5000"},
+					"X-RateLimit-Remaining": []string{"0"},
+					"X-RateLimit-Reset":     []string{strconv.FormatInt(now.Add(time.Hour).Unix(), 10)},
+				},
+				{
+					"X-RateLimit-Limit":     []string{"5000"},
+					"X-RateLimit-Remaining": []string{"4999"},
+					"X-RateLimit-Reset":     []string{strconv.FormatInt(now.Add(time.Hour).Unix(), 10)},
+				},
+			},
+			expectedError: false,
 		},
 		{
-			name:           "unauthorized",
-			owner:          "test-owner",
-			repoName:       "test-repo",
-			since:          now.Add(-24 * time.Hour),
-			mockResponse:   nil,
-			mockStatusCode: http.StatusUnauthorized,
-			expectedError:  true,
-		},
-		{
-			name:           "no commits found",
-			owner:          "test-owner",
-			repoName:       "test-repo",
-			since:          now.Add(-24 * time.Hour),
-			mockResponse:   []CommitResponse{},
-			mockStatusCode: http.StatusOK,
-			expectedError:  false,
+			name:            "repository not found",
+			owner:           "test-owner",
+			repoName:        "non-existent",
+			since:           now.Add(-24 * time.Hour),
+			mockResponses:   [][]CommitResponse{nil},
+			mockStatusCodes: []int{http.StatusNotFound},
+			mockHeaders:     []http.Header{{}},
+			expectedError:   true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a test server
+			requestCount := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Verify request headers
 				assert.Equal(t, "token test-token", r.Header.Get("Authorization"))
@@ -215,11 +283,22 @@ func TestFetchCommits(t *testing.T) {
 					assert.Equal(t, tc.since.Format(time.RFC3339), r.URL.Query().Get("since"))
 				}
 
-				// Set response
-				w.WriteHeader(tc.mockStatusCode)
-				if tc.mockResponse != nil {
-					json.NewEncoder(w).Encode(tc.mockResponse)
+				// Set response headers
+				for key, values := range tc.mockHeaders[requestCount] {
+					for _, value := range values {
+						w.Header().Add(key, value)
+					}
 				}
+
+				// Set response status code
+				w.WriteHeader(tc.mockStatusCodes[requestCount])
+
+				// Set response body
+				if tc.mockResponses[requestCount] != nil {
+					json.NewEncoder(w).Encode(tc.mockResponses[requestCount])
+				}
+
+				requestCount++
 			}))
 			defer server.Close()
 
@@ -243,14 +322,16 @@ func TestFetchCommits(t *testing.T) {
 				assert.Nil(t, commits)
 			} else {
 				assert.NoError(t, err)
-				if len(tc.mockResponse) > 0 {
+				if len(tc.mockResponses) > 0 {
 					assert.NotNil(t, commits)
-					assert.Equal(t, len(tc.mockResponse), len(commits))
-					assert.Equal(t, tc.mockResponse[0].SHA, commits[0].SHA)
-					assert.Equal(t, tc.mockResponse[0].Commit.Message, commits[0].Commit.Message)
-					assert.Equal(t, tc.mockResponse[0].Commit.Author.Name, commits[0].Commit.Author.Name)
-					assert.Equal(t, tc.mockResponse[0].Commit.Author.Email, commits[0].Commit.Author.Email)
-					assert.Equal(t, tc.mockResponse[0].HTMLURL, commits[0].HTMLURL)
+					// Calculate expected total commits
+					expectedCount := 0
+					for _, response := range tc.mockResponses {
+						if response != nil {
+							expectedCount += len(response)
+						}
+					}
+					assert.Equal(t, expectedCount, len(commits))
 				} else {
 					assert.Empty(t, commits)
 				}
